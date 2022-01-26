@@ -2,6 +2,9 @@
 
 ## Description ##
 
+This software is for the APRS_IGate project. The hardware can be found at https://www.pi4raz.nl/index.php/products-page/kits/aprs-igate/ .
+The iGate has an ESP32 and an Arduino. The ESP32 has to be programmed with APRS_IGate.ino sketch. The Arduino has a TNC function and needs to be programmed with the kissTnc.ino sketch (see kissTnc submodule). 
+
 ## Installation and programming ##
 
 To install the ESP32 board in your Arduino IDE, follow these next instructions:
