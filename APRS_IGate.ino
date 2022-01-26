@@ -4,6 +4,7 @@
 #include "Wire.h"
 #include "SSD1306.h"
 //#include <TinyLoRaESP.h>
+#include "kissHost.hpp"
 
 #define offsetEEPROM 0x0    //offset config
 #define EEPROM_SIZE 174
@@ -14,6 +15,7 @@
 #define OLED_SDA	4			// GPIO4
 #define OLED_RST	16
 #define TX_LED 27
+#define TX_LED_DELAY 500 // milliseconds
 #define OLED_ADR	0x3C		// Default 0x3C for 0.9", for 1.3" it is 0x78
 #define wdtTimeout 30   //time in seconds to trigger the watchdog
 #define VERSION "Arduino_RAZ_IGATE_TCP"
@@ -21,17 +23,20 @@
 #define hasLCD
 //#define hasLoRa
 
-char recvBuf[BUFFERSIZE+1];
+#define UI_FRAME_CONTROL_FIELD 0x03
+
 char buf[BUFFERSIZE+1];
 char receivedString[28];
 
 int buflen = 0;
 bool DEBUG_PRINT = 1;
 uint32_t oledSleepTime = 0;
+uint32_t txLedDelayTime = 0;
 uint32_t lastClientUpdate = 0;
 
 WiFiClient client;
 HardwareSerial Modem(1);
+KissHost kissHost(1);
 
 hw_timer_t *timer = NULL;
 
@@ -54,7 +59,6 @@ struct StoreStruct {
 	char PHG[9];
 	char APRSIP[25];
 	int APRSPort;
-	char destination[7];
 };
 
 StoreStruct storage = {
@@ -66,12 +70,11 @@ StoreStruct storage = {
 		5,
 		300,
 		"99999",
-		"5204.44N",
-		"00430.24E",
+		"5136.60N",
+		"00449.70E",
 		"PHG01000",
 		"rotate.aprs.net",    //sjc.aprs2.net
-		14580,
-		"APRAZ1",
+		14580
 };
 
 //LoRa Settings
@@ -130,7 +133,7 @@ void setup() {
 	#endif
 
 	Serial.println(F("Type GS to enter setup:"));
-	delay(5000);
+	delay(20000);
 	if (Serial.available()) {
 		if (Serial.find("GS")) {
 			Serial.println(F("Setup entered..."));
@@ -195,100 +198,100 @@ void loop() {
 		#endif
 	}
 
-	if (check_connection()){
-		if (millis()-lastClientUpdate>storage.updateInterval*1000){
-
-			#ifdef hasLCD
-			lcd.clear();
-			lcd.drawString(0, 0, "Update IGate info");
-			lcd.display();
-			#endif
-			updateGatewayonAPRS();
-		}
-		byte doSwap = 1;
-		int bufpos = 0;
-		while (Modem.available()) {
-			char ch = Modem.read();
-
-			if (ch == 0xc0 && buflen>4){
-				ch='\n';
-			}
-			if (ch==0x03){
-				doSwap = 0;
-				bufpos=buflen;
-			}
-
-			if (ch == '\n') {
-				recvBuf[buflen] = 0;
-				Serial.println(recvBuf);
-				if (convertPacket(buflen,bufpos)){
-					digitalWrite(TX_LED, HIGH);
-					send_packet();
-					#ifdef hasLoRa
-					send_LoRaPacket();
-					#endif
-					delay(100);
-					digitalWrite(TX_LED, LOW);
-					oledSleepTime=millis();
-				} else {
-					Serial.println("Illegal packet");
-
-					#ifdef hasLCD
-					lcd.clear();
-					lcd.drawString(0, 0, "Illegal packet");
-					lcd.drawStringMaxWidth(0,16, 200, buf);
-					lcd.display();
-					#endif
-					oledSleepTime=millis();
-				}
-				buflen = 0;
-			} else if (ch == 0xc0) {
-				// Skip chars
-			} else if ((ch > 31 || ch == 0x1c || ch == 0x1d|| ch == 0x1e || ch == 0x1f || ch == 0x27) && buflen < BUFFERSIZE) {
-				// Mic-E uses some non-printing characters
-				if (doSwap==1) ch=ch>>1;
-				recvBuf[buflen++] = ch;
-			}
-		}
-
-		//	If connected to APRS-IS, read any response from APRS-IS and display it.
-		//	Buffer 80 characters at a time in case printing a character at a time is slow.
-		receive_data();
-
-		int b = 0;
-		while (Serial.available() > 0) {
-			b = Serial.read();
-			Modem.write(b);
-		}
-	}
+  if (millis()-txLedDelayTime>TX_LED_DELAY){
+    digitalWrite(TX_LED, LOW);
+  }
+  
+  if (Modem.available() > 0) {
+    buflen = kissHost.processKissInByte(Modem.read());
+  }
+  else {
+    buflen = 0;
+  }
+  int bufpos = 0;
+  int pIdx=0;
+  while ((pIdx<buflen) && (bufpos==0)) {
+    if (kissHost.packet[pIdx] == UI_FRAME_CONTROL_FIELD) {
+      bufpos = pIdx;
+    }
+    pIdx++;
+  }
+  
+  if (check_connection()){
+    if (buflen>0) {
+      if (convertPacket(buflen,bufpos)){
+        digitalWrite(TX_LED, HIGH);
+        txLedDelayTime=millis();
+        send_packet();
+        delay(100);
+        oledSleepTime=millis();
+      }
+      else {
+        Serial.println("no UI-frame");
+        #ifdef hasLCD
+        lcd.clear();
+        lcd.drawString(0, 0, "no UI-frame");
+        lcd.drawStringMaxWidth(0,16, 200, buf);
+        lcd.display();
+        #endif
+        oledSleepTime=millis();
+      }
+    }
+    
+    if (millis()-lastClientUpdate>storage.updateInterval*1000){
+      #ifdef hasLCD
+      lcd.clear();
+      lcd.drawString(0, 0, "Update IGate info");
+      lcd.display();
+      #endif
+      oledSleepTime=millis();
+      updateGatewayonAPRS();
+    }
+    
+    //  If connected to APRS-IS, read any response from APRS-IS and display it.
+    //  Buffer 80 characters at a time in case printing a character at a time is slow.
+    receive_data();
+    int b = 0;
+    while (Serial.available() > 0) {
+      b = Serial.read();
+      Modem.write(b);
+    }
+  }
 }
 
 bool convertPacket(int bufLen,int bufPos) {
-	bool retVal = 0;
+	bool retVal = false;
 	if (bufPos>0){
-		memcpy(buf,&recvBuf[8],6);
-		int newPos=0;
-		for (int i=7;i<13;i++){
-			if (recvBuf[i]!=' ') buf[newPos++]=recvBuf[i];
-		}
-		buf[newPos++]='-';
-		buf[newPos++]=recvBuf[13]&0x3F;
-		buf[newPos++]='>';
+    memcpy(buf,&kissHost.packet[8],6);
+    int newPos=0;
+    for (int i=7;i<13;i++){
+      if (kissHost.packet[i]!=' ') {
+        buf[newPos++]=kissHost.packet[i];
+      }
+    }
+    char chSsid = kissHost.packet[13]&0x3F;
+    if (chSsid !=  0x30) {
+      buf[newPos++]='-';
+      buf[newPos++]=kissHost.packet[13]&0x3F;
+    }
+    buf[newPos++]='>';
 
-		for (int i=0;i<6;i++){
-			if (recvBuf[i]!=' ') buf[newPos++]=recvBuf[i];
-		}
-		buf[newPos++]=':';
-		for (int i=bufPos+1;i<bufLen;i++){
-			buf[newPos++]=recvBuf[i];
-		}
-		buf[newPos++]=0;
-		retVal = 1;
-	} else {
-		strcpy (buf,recvBuf);
-	}
-	return retVal;
-	recvBuf[0]=0;
+    for (int i=0;i<6;i++){
+      if (kissHost.packet[i]!=' ') {
+        buf[newPos++]=kissHost.packet[i];
+      }
+    }
+    buf[newPos++]=':';
+    for (int i=bufPos+2;i<bufLen;i++) {
+      buf[newPos++]=kissHost.packet[i];
+    }
+    buf[newPos++]=0;
+    retVal = true;
+  } 
+  else {
+    strcpy (buf, kissHost.packet);
+  }
+  return retVal;
 }
 
 // See http://www.aprs-is.net/Connecting.aspx
@@ -420,19 +423,20 @@ void InitConnection() {
 			}
 		}
 	}
+  oledSleepTime=millis();
 }
 
 void updateGatewayonAPRS(){
-	if (client.connected()){
-		Serial.println("Update IGate info on APRS");
-		client.print(storage.callSign);
-		client.print(">APRS,TCPIP*:@072239z");
-		client.print(storage.latitude);
-		client.print("/");
-		client.print(storage.longitude);
-		client.println("I/A=000012 "INFO);
-		lastClientUpdate = millis();
-	};
+  if (client.connected()){
+    Serial.println("Update IGate info on APRS");
+    client.print(storage.callSign);
+    client.print(">APRAZ1,TCPIP*:!");
+    client.print(storage.latitude);
+    client.print("/");
+    client.print(storage.longitude);
+    client.println("I/A=000012 "INFO);
+    lastClientUpdate = millis();
+  };
 }
 
 void WlanReset() {
@@ -509,28 +513,11 @@ void setDra(byte rxFreq, byte txFreq, byte rxTone, byte txTone) {
 	if(txFreq>79) txPart = txFreq-80; else txPart=txFreq;
 	if(rxFreq>79) rxPart = rxFreq-80; else rxPart=rxFreq;
 
-	sprintf(buff,"AT+DMOSETGROUP=0,14%01d.%04d,14%01d.%04d,%04d,1,%04d",int(txFreq/80)+4,txPart*125,int(rxFreq/80)+4,rxPart*125,txTone,rxTone);
-	Serial.println();
-	Serial.println(buff);
-	Modem.println(buff);
+  sprintf(buff,"AT+DMOSETGROUP=0,14%01d.%04d,14%01d.%04d,%04d,0,%04d",int(txFreq/80)+4,txPart*125,int(rxFreq/80)+4,rxPart*125,txTone,rxTone);
+  Serial.println();
+  Serial.println(buff);
+  Modem.println(buff);
 }
-
-//struct StoreStruct {
-//	byte chkDigit;
-//	char SSID[25];
-//	char pass[25];
-//	char callSign[10];
-//	int modemChannel;
-//	int oledTimeout;
-//	int updateInterval;
-//	char passCode[6];
-//	char latitude[9];
-//	char longitude[10];
-//	char PHG[9];
-//	char APRSIP[25];
-//	int APRSPort;
-//	char destination[7];
-//};
 
 void setSettings(bool doSet) {
 	int i = 0;
@@ -665,18 +652,6 @@ void setSettings(bool doSet) {
 	if (doSet == 1) {
 		i = get32NumericValue();
 		if (receivedString[0] != 0) storage.APRSPort = i;
-	}
-	Serial.println();
-
-	Serial.print(F("Destination ("));
-	Serial.print(storage.destination);
-	Serial.print(F("):"));
-	if (doSet == 1) {
-		getStringValue(6);
-		if (receivedString[0] != 0) {
-			storage.destination[0] = 0;
-			strcat(storage.destination, receivedString);
-		}
 	}
 	Serial.println();
 

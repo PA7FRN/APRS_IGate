@@ -1,0 +1,3 @@
+[submodule "kissTnc"]
+	path = kissTnc
+	url = git@github.com:PA7FRN/kissTnc.git
