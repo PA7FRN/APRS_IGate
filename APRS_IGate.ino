@@ -3,12 +3,11 @@
 #include "WiFi.h"
 #include "Wire.h"
 #include "SSD1306.h"
-//#include <TinyLoRaESP.h>
 #include "kissHost.hpp"
+#include "ax25.hpp"
 
 #define offsetEEPROM 0x0    //offset config
 #define EEPROM_SIZE 174
-#define BUFFERSIZE 260
 #define Modem_RX 22
 #define Modem_TX 23
 #define OLED_SCL	15			// GPIO15
@@ -21,15 +20,9 @@
 #define VERSION "Arduino_RAZ_IGATE_TCP"
 #define INFO "Arduino RAZ IGATE"
 #define hasLCD
-//#define hasLoRa
 
-#define UI_FRAME_CONTROL_FIELD 0x03
-
-char buf[BUFFERSIZE+1];
 char receivedString[28];
 
-int buflen = 0;
-bool DEBUG_PRINT = 1;
 uint32_t oledSleepTime = 0;
 uint32_t txLedDelayTime = 0;
 uint32_t lastClientUpdate = 0;
@@ -37,6 +30,7 @@ uint32_t lastClientUpdate = 0;
 WiFiClient client;
 HardwareSerial Modem(1);
 KissHost kissHost(1);
+AX25 ax25(1);
 
 hw_timer_t *timer = NULL;
 
@@ -76,14 +70,6 @@ StoreStruct storage = {
 		"rotate.aprs.net",    //sjc.aprs2.net
 		14580
 };
-
-//LoRa Settings
-#ifdef hasLoRa
-uint8_t NwkSkey[16] = { 0xFB, 0xC2, 0x97, 0x1F, 0xE4, 0x6E, 0x4F, 0x9D, 0x5A, 0x96, 0xC8, 0xFB, 0xFF, 0x4F, 0x3E, 0x0C };
-uint8_t AppSkey[16] = { 0x00, 0xE6, 0x92, 0x7B, 0xCB, 0x21, 0xE3, 0x60, 0xA8, 0xA4, 0x47, 0x2F, 0xD7, 0xE9, 0x63, 0x77 };
-uint8_t DevAddr[4] = { 0x26, 0x01, 0x1A, 0xC4 };
-TinyLoRa lora = TinyLoRa(26, 18, 14);
-#endif
 
 #ifdef hasLCD
 SSD1306  lcd(OLED_ADR, OLED_SDA, OLED_SCL);// i2c ADDR & SDA, SCL on wemos
@@ -161,24 +147,6 @@ void setup() {
 	lcd.display();
 	#endif
 
-	// define single-channel sending
-	#ifdef hasLoRa
-	lora.setChannel(CH0);
-	// set datarate
-	lora.setDatarate(SF9BW125);
-	if(!lora.begin())
-	{
-		Serial.println("Failed");
-		Serial.println("Check your radio, LoRa disabled");
-	}
-	Serial.println("LoRa enabled");
-
-	#ifdef hasLCD
-	lcd.drawString(0, 32, "LoRa Enabled" );
-	lcd.display();
-	#endif
-	#endif
-
 	timer = timerBegin(0, 80, true);                  //timer 0, div 80
 	timerAttachInterrupt(timer, &resetModule, true);  //attach callback
 	timerAlarmWrite(timer, wdtTimeout * 1000 * 1000, false); //set time in us
@@ -202,36 +170,26 @@ void loop() {
     digitalWrite(TX_LED, LOW);
   }
   
+  int buflen = 0;
   if (Modem.available() > 0) {
     buflen = kissHost.processKissInByte(Modem.read());
-  }
-  else {
-    buflen = 0;
-  }
-  int bufpos = 0;
-  int pIdx=0;
-  while ((pIdx<buflen) && (bufpos==0)) {
-    if (kissHost.packet[pIdx] == UI_FRAME_CONTROL_FIELD) {
-      bufpos = pIdx;
-    }
-    pIdx++;
   }
   
   if (check_connection()){
     if (buflen>0) {
-      if (convertPacket(buflen,bufpos)){
+	  if (ax25.parseForIS(kissHost.packet, buflen)) {
         digitalWrite(TX_LED, HIGH);
         txLedDelayTime=millis();
+        Serial.println(ax25.isPacket);
         send_packet();
         delay(100);
         oledSleepTime=millis();
       }
       else {
-        Serial.println("no UI-frame");
         #ifdef hasLCD
         lcd.clear();
-        lcd.drawString(0, 0, "no UI-frame");
-        lcd.drawStringMaxWidth(0,16, 200, buf);
+        lcd.drawString(0, 0, "drop");
+        lcd.drawStringMaxWidth(0,16, 200, ax25.isPacket);
         lcd.display();
         #endif
         oledSleepTime=millis();
@@ -259,41 +217,6 @@ void loop() {
   }
 }
 
-bool convertPacket(int bufLen,int bufPos) {
-	bool retVal = false;
-	if (bufPos>0){
-    memcpy(buf,&kissHost.packet[8],6);
-    int newPos=0;
-    for (int i=7;i<13;i++){
-      if (kissHost.packet[i]!=' ') {
-        buf[newPos++]=kissHost.packet[i];
-      }
-    }
-    char chSsid = kissHost.packet[13]&0x3F;
-    if (chSsid !=  0x30) {
-      buf[newPos++]='-';
-      buf[newPos++]=kissHost.packet[13]&0x3F;
-    }
-    buf[newPos++]='>';
-
-    for (int i=0;i<6;i++){
-      if (kissHost.packet[i]!=' ') {
-        buf[newPos++]=kissHost.packet[i];
-      }
-    }
-    buf[newPos++]=':';
-    for (int i=bufPos+2;i<bufLen;i++) {
-      buf[newPos++]=kissHost.packet[i];
-    }
-    buf[newPos++]=0;
-    retVal = true;
-  } 
-  else {
-    strcpy (buf, kissHost.packet);
-  }
-  return retVal;
-}
-
 // See http://www.aprs-is.net/Connecting.aspx
 boolean check_connection() {
 	if (WiFi.status() !=WL_CONNECTED || !client.connected()) {
@@ -312,44 +235,23 @@ void receive_data() {
 			if (c == '\n') break;
 		}
 		rbuf[i] = 0;
-		display(rbuf);
+//		display(rbuf);
 	}
 }
 
 void send_packet() {
 	display("Sending packet");
-	display(buf);
+	display(ax25.isPacket);
 
 	#ifdef hasLCD
 	lcd.clear();
 	lcd.drawString(0, 0, "Send packet");
-	lcd.drawStringMaxWidth(0,16, 200, buf);
+	lcd.drawStringMaxWidth(0,16, 200, ax25.isPacket);
 	lcd.display();
 	#endif
-	client.println(buf);
+	client.println(ax25.isPacket);
 	//client.println("PA2RDK-9" ">" DESTINATION ":!" LATITUDE "I" LONGITUDE "&" PHG "/" "DATATEST");
 	client.println();
-}
-
-void send_LoRaPacket() {
-	#ifdef hasLoRa
-	int x = 0;
-	byte buffer[50];
-	while (buf[x]!=0 && x<50){
-		buffer[x]=buf[x];
-		//Serial.print(buffer[x]);
-		x++;
-	}
-	if (x<49){
-		Serial.println("Sending LoRa Data...");
-		lora.sendData(buffer, x, lora.frameCounter);
-		Serial.print("Frame Counter: ");Serial.println(lora.frameCounter);
-		lora.frameCounter++;
-	}
-	#endif
-}
-void display_packet() {
-	Serial.println(buf);
 }
 
 void display(char *msg) {
