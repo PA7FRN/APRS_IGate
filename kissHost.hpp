@@ -11,19 +11,18 @@
 #define KS_GET_DATA 2
 #define KS_ESCAPE   3
 
-#define BUFFERSIZE 260
+#define BUFFERSIZE 400
 
 class KissHost {
   public:
     KissHost(int i);
     int processKissInByte(char newByte);
-    char packet[BUFFERSIZE+1];
-    int  packetSize = 0;
+    char packet[BUFFERSIZE];
   private:
     int  _kissInState = KS_UNDEF;
-    bool _kissOutFrameEnd = true;
-    bool _readAddress = true;
     int  _packetByteIdx = 0;
+    int  _packetSize = 0;
+    bool _readAddress = true;
     void storeDataByte(char newByte);
     char byteBitShift(char val, int bitCount);
     void clearPacket();

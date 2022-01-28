@@ -11,7 +11,7 @@ int KissHost::processKissInByte(char newByte) {
       }
       break;
     case KS_GET_CMD:
-      packetSize = 0;
+      _packetSize = 0;
       if (newByte != FEND) {
         if (newByte == 0) {
           _kissInState = KS_GET_DATA;
@@ -49,7 +49,7 @@ int KissHost::processKissInByte(char newByte) {
       }
       break;
   }
-  return packetSize;
+  return _packetSize;
 }
 
 void KissHost::storeDataByte(char newByte) {
@@ -76,6 +76,6 @@ void KissHost::clearPacket() {
 
 void KissHost::setPacketReady() {
   packet[_packetByteIdx] = 0;
-  packetSize = _packetByteIdx+1;
+  _packetSize = _packetByteIdx+1;
   _packetByteIdx = 0;
 }
