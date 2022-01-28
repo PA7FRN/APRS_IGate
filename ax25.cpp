@@ -43,14 +43,14 @@ bool AX25::parseForIS(char* uiFrame, int size) {
       isPos = tranlateAddressToIS(uiFrame, uiStartPos, isPos, true);
       checkPos   += 7;
       uiStartPos += 7;
-	  i++;
+      i++;
     }
     
     isPacket[isPos] = ':';
     isPos++;
     
     uiStartPos += 2;
-    while (uiStartPos < size) {
+    while ((uiStartPos < size) && (isPos < BUFFERSIZE)) {
       isPacket[isPos] = (char)uiFrame[uiStartPos];
       isPos++;
       uiStartPos++;

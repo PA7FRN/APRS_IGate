@@ -119,20 +119,25 @@ void setup() {
 	#endif
 
 	Serial.println(F("Type GS to enter setup:"));
-	delay(20000);
-	if (Serial.available()) {
-		if (Serial.find("GS")) {
-			Serial.println(F("Setup entered..."));
-
-			#ifdef hasLCD
-			lcd.clear();
-			lcd.drawString(0, 0,"Setup entered");
-			lcd.display();
-			#endif
-			setSettings(true);
-			delay(2000);
-		}
-	}
+  uint32_t setupWaitTime=millis();
+  char gs1, gs2;
+  while (millis()-setupWaitTime < 10000) {
+    if (Serial.available()) {
+      gs1 = gs2;
+      gs2 = Serial.read();
+      if (((gs1 == 'G') || (gs1 == 'g')) &&
+          ((gs2 == 'S') || (gs2 == 's'))) {
+        Serial.println(F("Setup entered..."));
+        #ifdef hasLCD
+        lcd.clear();
+        lcd.drawString(0, 0,"Setup entered");
+        lcd.display();
+        #endif
+        setSettings(true);
+        delay(2000);
+      }
+    }
+  }
 
 	delay(1000);
 	setDra(storage.modemChannel, storage.modemChannel, 0, 0);
@@ -142,10 +147,11 @@ void setup() {
 	Serial.print(F("DRA Initialized on freq:"));
 	Serial.println(float(144000+(storage.modemChannel*12.5))/1000);
 
-	#ifdef hasLCD
-	lcd.drawString(0, 24, "Modem set at "+String(float(144000+(storage.modemChannel*12.5))/1000)+ "MHz" );
-	lcd.display();
-	#endif
+  #ifdef hasLCD
+  lcd.drawString(0, 24, "Modem set at "+String(float(144000+(storage.modemChannel*12.5))/1000)+ "MHz" );
+  lcd.display();
+  oledSleepTime=millis();
+  #endif
 
 	timer = timerBegin(0, 80, true);                  //timer 0, div 80
 	timerAttachInterrupt(timer, &resetModule, true);  //attach callback
@@ -156,17 +162,17 @@ void setup() {
 }
 
 void loop() {
-	timerWrite(timer, 0);
-	if (millis()-oledSleepTime>storage.oledTimeout*1000){
-		oledSleepTime=millis();
+  timerWrite(timer, 0);
 
-		#ifdef hasLCD
-		lcd.clear();
-		lcd.display();
-		#endif
-	}
+  #ifdef hasLCD
+  if (millis()-oledSleepTime>storage.oledTimeout*1000) {
+    lcd.clear();
+    lcd.display();
+    oledSleepTime=millis();
+  }
+  #endif
 
-  if (millis()-txLedDelayTime>TX_LED_DELAY){
+  if (millis()-txLedDelayTime>TX_LED_DELAY) {
     digitalWrite(TX_LED, LOW);
   }
   
@@ -177,32 +183,15 @@ void loop() {
   
   if (check_connection()){
     if (buflen>0) {
-	  if (ax25.parseForIS(kissHost.packet, buflen)) {
+	    if (ax25.parseForIS(kissHost.packet, buflen)) {
         digitalWrite(TX_LED, HIGH);
         txLedDelayTime=millis();
-        Serial.println(ax25.isPacket);
         send_packet();
         delay(100);
-        oledSleepTime=millis();
-      }
-      else {
-        #ifdef hasLCD
-        lcd.clear();
-        lcd.drawString(0, 0, "drop");
-        lcd.drawStringMaxWidth(0,16, 200, ax25.isPacket);
-        lcd.display();
-        #endif
-        oledSleepTime=millis();
       }
     }
     
-    if (millis()-lastClientUpdate>storage.updateInterval*1000){
-      #ifdef hasLCD
-      lcd.clear();
-      lcd.drawString(0, 0, "Update IGate info");
-      lcd.display();
-      #endif
-      oledSleepTime=millis();
+    if (millis()-lastClientUpdate>storage.updateInterval*1000) {
       updateGatewayonAPRS();
     }
     
@@ -234,43 +223,37 @@ void receive_data() {
 			rbuf[i++] = c;
 			if (c == '\n') break;
 		}
-		rbuf[i] = 0;
-//		display(rbuf);
-	}
+    rbuf[i] = 0;
+ // Serial.println(rbuf);
+  }
 }
 
 void send_packet() {
-	display("Sending packet");
-	display(ax25.isPacket);
-
-	#ifdef hasLCD
-	lcd.clear();
-	lcd.drawString(0, 0, "Send packet");
-	lcd.drawStringMaxWidth(0,16, 200, ax25.isPacket);
-	lcd.display();
-	#endif
-	client.println(ax25.isPacket);
-	//client.println("PA2RDK-9" ">" DESTINATION ":!" LATITUDE "I" LONGITUDE "&" PHG "/" "DATATEST");
-	client.println();
-}
-
-void display(char *msg) {
-	// Put a space before each serial output line, to avoid sending commands to the RadioShield.
-	Serial.println(msg);
+  Serial.println(ax25.isPacket);
+  #ifdef hasLCD
+  lcd.clear();
+  lcd.drawString(0, 0, "Send packet");
+  lcd.drawStringMaxWidth(0,16, 200, ax25.isPacket);
+  lcd.display();
+  oledSleepTime=millis();
+  #endif
+  client.println(ax25.isPacket);
+  client.println();
 }
 
 void InitConnection() {
-	display("++++++++++++++");
-	display("Initialize connection");
+	Serial.println("++++++++++++++");
+	Serial.println("Initialize connection");
 
-	#ifdef hasLCD
-	lcd.clear();
-	lcd.drawString(0, 0, "Connecting to WiFi" );
-	lcd.display();
-	#endif
+  #ifdef hasLCD
+  lcd.clear();
+  lcd.drawString(0, 0, "Connecting to WiFi" );
+  lcd.display();
+  oledSleepTime=millis();
+  #endif
 
 	if (WiFi.status() != WL_CONNECTED){
-		display("Connecting to WiFi");
+		Serial.println("Connecting to WiFi");
 		WlanReset();
 		WiFi.begin(storage.SSID,storage.pass);
 		int agains=1;
@@ -283,18 +266,18 @@ void InitConnection() {
 	}
 
 	if (WlanStatus()==WL_CONNECTED){
-		#ifdef hasLCD
-		lcd.drawString(0, 8, "Connected to:");
-		lcd.drawString(70,8, storage.SSID);
-		lcd.display();
-		#endif
-		display("++++++++++++++");
-		display("WiFi connected");
-		display("IP address: ");
-		Serial.println(WiFi.localIP());
+    #ifdef hasLCD
+    lcd.drawString(0, 8, "Connected to:");
+    lcd.drawString(70,8, storage.SSID);
+    lcd.display();
+    oledSleepTime=millis();
+    #endif
+    Serial.println("++++++++++++++");
+    Serial.println("WiFi connected");
+    Serial.println("IP address: ");
 
 		if (!client.connected()) {
-			display("Connecting...");
+			Serial.println("Connecting...");
 			if (client.connect(storage.APRSIP, storage.APRSPort)) {
 				// Log in
 
@@ -306,29 +289,38 @@ void InitConnection() {
 
 				updateGatewayonAPRS();
 
-				display("Connected");
+				Serial.println("Connected");
 
-				#ifdef hasLCD
-				lcd.drawString(0, 16, "Con. APRS-IS:");
-				lcd.drawString(70,16, storage.callSign);
-				lcd.display();
-				#endif
-			} else {
-				display("Failed");
+        #ifdef hasLCD
+        lcd.drawString(0, 16, "Con. APRS-IS:");
+        lcd.drawString(70,16, storage.callSign);
+        lcd.display();
+        oledSleepTime=millis();
+        #endif
+      }
+      else {
+        Serial.println("Failed");
 
-				#ifdef hasLCD
-				lcd.drawString(0, 16, "Conn. to APRS-IS Failed" );
-				lcd.display();
-				#endif
-				// if still not connected, delay to prevent constant attempts.
-				delay(1000);
-			}
+        #ifdef hasLCD
+        lcd.drawString(0, 16, "Conn. to APRS-IS Failed" );
+        lcd.display();
+        oledSleepTime=millis();
+        #endif
+        // if still not connected, delay to prevent constant attempts.
+        delay(1000);
+      }
 		}
 	}
   oledSleepTime=millis();
 }
 
 void updateGatewayonAPRS(){
+  #ifdef hasLCD
+  lcd.clear();
+  lcd.drawString(0, 0, "Update IGate info");
+  lcd.display();
+  oledSleepTime=millis();
+  #endif
   if (client.connected()){
     Serial.println("Update IGate info on APRS");
     client.print(storage.callSign);
@@ -336,7 +328,8 @@ void updateGatewayonAPRS(){
     client.print(storage.latitude);
     client.print("/");
     client.print(storage.longitude);
-    client.println("I/A=000012 "INFO);
+    client.print("I/A=000012 ");
+    client.println(INFO);
     lastClientUpdate = millis();
   };
 }
