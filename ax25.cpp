@@ -3,7 +3,7 @@
 AX25::AX25(int i) {
 }
 
-bool AX25::parseForIS(char* uiFrame, int size) {
+bool AX25::parseForIS(char* uiFrame, int size, bool* drop) {
     int controlFieldPos = 0;
     int pIdx=0;
     while ((pIdx<size-1) && (controlFieldPos==0)) {
@@ -17,16 +17,16 @@ bool AX25::parseForIS(char* uiFrame, int size) {
     
     int checkPos = 13;
     
-    bool controlFielOk = (controlFieldPos > checkPos) && 
+    bool controlFieldOk = (controlFieldPos > checkPos) && 
                          (controlFieldPos < (size - 2));
-    if (!controlFielOk) {
+    if (controlFieldOk) {
+      *drop = uiFrame[controlFieldPos + 2] == '}';
+    }
+    else {
+      *drop = true;
       return false;
     }
 
-    if (uiFrame[controlFieldPos + 2] == '}') {
-      return false;
-    }
-   
     int isPos = 0;
     
     isPos = tranlateAddressToIS(uiFrame, 7, isPos, false);
