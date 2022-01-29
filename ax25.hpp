@@ -12,7 +12,7 @@
 class AX25 {
   public:
     AX25(int i);
-    bool parseForIS(char* uiFrame, int size);
+    bool parseForIS(char* uiFrame, int size, bool* drop);
     char isPacket[BUFFERSIZE];
   private:
     int tranlateAddressToIS(char* uiFrame, int uiStartPos, int isPos, bool markflag);

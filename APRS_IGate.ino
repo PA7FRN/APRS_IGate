@@ -183,14 +183,19 @@ void loop() {
   
   if (check_connection()){
     if (buflen>0) {
-	    if (ax25.parseForIS(kissHost.packet, buflen)) {
-        digitalWrite(TX_LED, HIGH);
-        txLedDelayTime=millis();
-        send_packet();
-        delay(100);
+      bool drop;
+      if (ax25.parseForIS(kissHost.packet, buflen, &drop)) {
+        if (drop) {
+          drop_packet();
+        }
+        else {
+          digitalWrite(TX_LED, HIGH);
+          txLedDelayTime=millis();
+          send_packet();
+        }
       }
     }
-    
+
     if (millis()-lastClientUpdate>storage.updateInterval*1000) {
       updateGatewayonAPRS();
     }
@@ -228,7 +233,20 @@ void receive_data() {
   }
 }
 
+void drop_packet() {
+  Serial.print("d ");
+  Serial.println(ax25.isPacket);
+  #ifdef hasLCD
+  lcd.clear();
+  lcd.drawString(0, 0, "Drop packet");
+  lcd.drawStringMaxWidth(0,16, 200, ax25.isPacket);
+  lcd.display();
+  oledSleepTime=millis();
+  #endif
+}
+
 void send_packet() {
+  Serial.print("R ");
   Serial.println(ax25.isPacket);
   #ifdef hasLCD
   lcd.clear();
@@ -403,12 +421,12 @@ int WlanStatus() {
 }
 
 void setDra(byte rxFreq, byte txFreq, byte rxTone, byte txTone) {
-	char buff[50];
-	int txPart, rxPart;
-	if(txFreq>79) txPart = txFreq-80; else txPart=txFreq;
-	if(rxFreq>79) rxPart = rxFreq-80; else rxPart=rxFreq;
+  char buff[50];
+  int txPart, rxPart;
+  if(txFreq>79) txPart = txFreq-80; else txPart=txFreq;
+  if(rxFreq>79) rxPart = rxFreq-80; else rxPart=rxFreq;
 
-  sprintf(buff,"AT+DMOSETGROUP=0,14%01d.%04d,14%01d.%04d,%04d,0,%04d",int(txFreq/80)+4,txPart*125,int(rxFreq/80)+4,rxPart*125,txTone,rxTone);
+  sprintf(buff,"AT+DMOSETGROUP=0,14%01d.%04d,14%01d.%04d,%04d,1,%04d",int(txFreq/80)+4,txPart*125,int(rxFreq/80)+4,rxPart*125,txTone,rxTone);
   Serial.println();
   Serial.println(buff);
   Modem.println(buff);
