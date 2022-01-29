@@ -20,6 +20,8 @@
 #define VERSION "Arduino_RAZ_IGATE_TCP"
 #define INFO "Arduino RAZ IGATE"
 #define hasLCD
+#define SQ_MIN 0
+#define SQ_MAX 8
 
 char receivedString[28];
 
@@ -40,35 +42,37 @@ void IRAM_ATTR resetModule() {
 }
 
 struct StoreStruct {
-	byte chkDigit;
-	char SSID[25];
-	char pass[64];
-	char callSign[10];
-	int modemChannel;
-	int oledTimeout;
-	int updateInterval;
-	char passCode[6];
-	char latitude[9];
-	char longitude[10];
-	char PHG[9];
-	char APRSIP[25];
-	int APRSPort;
+  byte chkDigit;
+  char SSID[25];
+  char pass[64];
+  char callSign[10];
+  int modemChannel;
+  int squelch;
+  int oledTimeout;
+  int updateInterval;
+  char passCode[6];
+  char latitude[9];
+  char longitude[10];
+  char PHG[9];
+  int APRSPort;
+  char APRSIP[25];
 };
 
 StoreStruct storage = {
-		'$',
-		"YourSSID",
-		"WiFiPassword",
-		"PI4RAZ-11",
-		64, //12.5 KHz steps, 64 = 144.800
-		5,
-		300,
-		"99999",
-		"5136.60N",
-		"00449.70E",
-		"PHG01000",
-		"rotate.aprs.net",    //sjc.aprs2.net
-		14580
+  '$',
+  "YourSSID",
+  "WiFiPassword",
+  "PI4RAZ-11",
+  64, //12.5 KHz steps, 64 = 144.800
+  1,
+  20,
+  600,
+  "99999",
+  "5204.44N",
+  "00430.24E",
+  "PHG3210/",
+  14580,
+  "rotate.aprs.net",
 };
 
 #ifdef hasLCD
@@ -140,7 +144,7 @@ void setup() {
   }
 
 	delay(1000);
-	setDra(storage.modemChannel, storage.modemChannel, 0, 0);
+	setDra(storage.modemChannel, storage.squelch);
 	Modem.println(F("AT+DMOSETVOLUME=8"));
 	Modem.println(F("AT+DMOSETMIC=8,0"));
 	Modem.println(F("AT+SETFILTER=1,1,1"));
@@ -420,13 +424,23 @@ int WlanStatus() {
 	return(-1);
 }
 
-void setDra(byte rxFreq, byte txFreq, byte rxTone, byte txTone) {
+void setDra(byte freq, byte squelch) {
   char buff[50];
-  int txPart, rxPart;
-  if(txFreq>79) txPart = txFreq-80; else txPart=txFreq;
-  if(rxFreq>79) rxPart = rxFreq-80; else rxPart=rxFreq;
 
-  sprintf(buff,"AT+DMOSETGROUP=0,14%01d.%04d,14%01d.%04d,%04d,1,%04d",int(txFreq/80)+4,txPart*125,int(rxFreq/80)+4,rxPart*125,txTone,rxTone);
+  int frMhz = int(freq/80)+4;
+  int frkHzPart;
+  if (freq>79) {
+    frkHzPart = freq-80;
+  }
+  else {
+    frkHzPart=freq;
+  }
+  frkHzPart *=125; 
+
+  sprintf(
+    buff, "AT+DMOSETGROUP=0,14%01d.%04d,14%01d.%04d,0000,%1d,0000", 
+    frMhz, frkHzPart, frMhz, frkHzPart, squelch
+  );
   Serial.println();
   Serial.println(buff);
   Modem.println(buff);
@@ -480,6 +494,19 @@ void setSettings(bool doSet) {
 		if (receivedString[0] != 0) storage.modemChannel = i;
 	}
 	Serial.println();
+
+  Serial.print(F("squelch (0..8 0=open)("));
+  Serial.print(storage.squelch);
+  Serial.print(F("): "));
+  if (doSet == 1) {
+    i = get32NumericValue();
+    if (receivedString[0] != 0) {
+      if ((i >= SQ_MIN) && (i <= SQ_MAX)) {
+        storage.squelch = i;
+      }
+    }
+  }
+  Serial.println();
 
 	Serial.print(F("Oled timeout (seconds)("));
 	Serial.print(storage.oledTimeout);
