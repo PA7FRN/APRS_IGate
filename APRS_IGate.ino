@@ -7,7 +7,6 @@
 #include "ax25.hpp"
 
 #define offsetEEPROM 0x0    //offset config
-#define EEPROM_SIZE 174
 #define Modem_RX 22
 #define Modem_TX 23
 #define OLED_SCL	15			// GPIO15
@@ -18,8 +17,9 @@
 #define OLED_ADR	0x3C		// Default 0x3C for 0.9", for 1.3" it is 0x78
 #define wdtTimeout 30   //time in seconds to trigger the watchdog
 #define VERSION "Arduino_RAZ_IGATE_TCP"
-#define INFO "Arduino RAZ IGATE"
 #define hasLCD
+#define SQ_MIN 0
+#define SQ_MAX 8
 
 char receivedString[28];
 
@@ -40,35 +40,41 @@ void IRAM_ATTR resetModule() {
 }
 
 struct StoreStruct {
-	byte chkDigit;
-	char SSID[25];
-	char pass[64];
-	char callSign[10];
-	int modemChannel;
-	int oledTimeout;
-	int updateInterval;
-	char passCode[6];
-	char latitude[9];
-	char longitude[10];
-	char PHG[9];
-	char APRSIP[25];
-	int APRSPort;
+  byte chkDigit;
+  char wifiSSID[25];
+  char pass[64];
+  char callSign[10];
+  int modemChannel;
+  int squelch;
+  int oledTimeout;
+  int updateInterval;
+  char passCode[6];
+  char symbol[3];
+  char latitude[9];
+  char longitude[10];
+  char PHG[8];
+  char beaconText[37];
+  char AprsIsAddress[25];
+  int APRSPort;
 };
 
 StoreStruct storage = {
-		'$',
-		"YourSSID",
-		"WiFiPassword",
-		"PI4RAZ-11",
-		64, //12.5 KHz steps, 64 = 144.800
-		5,
-		300,
-		"99999",
-		"5136.60N",
-		"00449.70E",
-		"PHG01000",
-		"rotate.aprs.net",    //sjc.aprs2.net
-		14580
+  '$',
+  "YourSSID",
+  "WiFiPassword",
+  "PI4RAZ-11",
+  64, //12.5 KHz steps, 64 = 144.800
+  1,
+  20,
+  600,
+  "99999",
+  "/I",
+  "5204.44N",
+  "00430.24E",
+  "PHG3210",
+  "Arduino RAZ IGATE /A=000012",
+  "rotate.aprs.net",
+  14580
 };
 
 #ifdef hasLCD
@@ -102,14 +108,14 @@ void setup() {
 	Modem.begin(9600, SERIAL_8N1, Modem_RX, Modem_TX);
 	Modem.setTimeout(2);
 
-	if (!EEPROM.begin(EEPROM_SIZE))
+	if (!EEPROM.begin(sizeof(storage) /*EEPROM_SIZE*/))
 	{
 		Serial.println("failed to initialise EEPROM"); while(1);
 	}
-	if (EEPROM.read(offsetEEPROM) != storage.chkDigit){
+  if (EEPROM.read(offsetEEPROM) != storage.chkDigit){
 		Serial.println(F("Writing defaults"));
 		saveConfig();
-	}
+  }
 	loadConfig();
 	printConfig();
 
@@ -140,7 +146,7 @@ void setup() {
   }
 
 	delay(1000);
-	setDra(storage.modemChannel, storage.modemChannel, 0, 0);
+	setDra(storage.modemChannel, storage.squelch);
 	Modem.println(F("AT+DMOSETVOLUME=8"));
 	Modem.println(F("AT+DMOSETMIC=8,0"));
 	Modem.println(F("AT+SETFILTER=1,1,1"));
@@ -183,14 +189,19 @@ void loop() {
   
   if (check_connection()){
     if (buflen>0) {
-	    if (ax25.parseForIS(kissHost.packet, buflen)) {
-        digitalWrite(TX_LED, HIGH);
-        txLedDelayTime=millis();
-        send_packet();
-        delay(100);
+      bool drop;
+      if (ax25.parseForIS(kissHost.packet, buflen, &drop)) {
+        if (drop) {
+          drop_packet();
+        }
+        else {
+          digitalWrite(TX_LED, HIGH);
+          txLedDelayTime=millis();
+          send_packet();
+        }
       }
     }
-    
+
     if (millis()-lastClientUpdate>storage.updateInterval*1000) {
       updateGatewayonAPRS();
     }
@@ -228,7 +239,20 @@ void receive_data() {
   }
 }
 
+void drop_packet() {
+  Serial.print("d ");
+  Serial.println(ax25.isPacket);
+  #ifdef hasLCD
+  lcd.clear();
+  lcd.drawString(0, 0, "Drop packet");
+  lcd.drawStringMaxWidth(0,16, 200, ax25.isPacket);
+  lcd.display();
+  oledSleepTime=millis();
+  #endif
+}
+
 void send_packet() {
+  Serial.print("R ");
   Serial.println(ax25.isPacket);
   #ifdef hasLCD
   lcd.clear();
@@ -255,7 +279,7 @@ void InitConnection() {
 	if (WiFi.status() != WL_CONNECTED){
 		Serial.println("Connecting to WiFi");
 		WlanReset();
-		WiFi.begin(storage.SSID,storage.pass);
+		WiFi.begin(storage.wifiSSID, storage.pass);
 		int agains=1;
 		while ((WiFi.status() != WL_CONNECTED) && (agains < 20)){
 			Serial.print(".");
@@ -268,7 +292,7 @@ void InitConnection() {
 	if (WlanStatus()==WL_CONNECTED){
     #ifdef hasLCD
     lcd.drawString(0, 8, "Connected to:");
-    lcd.drawString(70,8, storage.SSID);
+    lcd.drawString(70,8, storage.wifiSSID);
     lcd.display();
     oledSleepTime=millis();
     #endif
@@ -278,7 +302,7 @@ void InitConnection() {
 
 		if (!client.connected()) {
 			Serial.println("Connecting...");
-			if (client.connect(storage.APRSIP, storage.APRSPort)) {
+			if (client.connect(storage.AprsIsAddress, storage.APRSPort)) {
 				// Log in
 
 				client.print("user ");
@@ -326,10 +350,11 @@ void updateGatewayonAPRS(){
     client.print(storage.callSign);
     client.print(">APRAZ1,TCPIP*:!");
     client.print(storage.latitude);
-    client.print("/");
+    client.print(storage.symbol[0]);
     client.print(storage.longitude);
-    client.print("I/A=000012 ");
-    client.println(INFO);
+    client.print(storage.symbol[1]);
+    client.print(storage.PHG);
+    client.println(storage.beaconText);
     lastClientUpdate = millis();
   };
 }
@@ -402,13 +427,23 @@ int WlanStatus() {
 	return(-1);
 }
 
-void setDra(byte rxFreq, byte txFreq, byte rxTone, byte txTone) {
-	char buff[50];
-	int txPart, rxPart;
-	if(txFreq>79) txPart = txFreq-80; else txPart=txFreq;
-	if(rxFreq>79) rxPart = rxFreq-80; else rxPart=rxFreq;
+void setDra(byte freq, byte squelch) {
+  char buff[50];
 
-  sprintf(buff,"AT+DMOSETGROUP=0,14%01d.%04d,14%01d.%04d,%04d,0,%04d",int(txFreq/80)+4,txPart*125,int(rxFreq/80)+4,rxPart*125,txTone,rxTone);
+  int frMhz = int(freq/80)+4;
+  int frkHzPart;
+  if (freq>79) {
+    frkHzPart = freq-80;
+  }
+  else {
+    frkHzPart=freq;
+  }
+  frkHzPart *=125; 
+
+  sprintf(
+    buff, "AT+DMOSETGROUP=0,14%01d.%04d,14%01d.%04d,0000,%1d,0000", 
+    frMhz, frkHzPart, frMhz, frkHzPart, squelch
+  );
   Serial.println();
   Serial.println(buff);
   Modem.println(buff);
@@ -418,14 +453,14 @@ void setSettings(bool doSet) {
 	int i = 0;
 	receivedString[0] = 'X';
 
-	Serial.print(F("SSID ("));
-	Serial.print(storage.SSID);
+	Serial.print(F("Wifi SSID ("));
+	Serial.print(storage.wifiSSID);
 	Serial.print(F("):"));
 	if (doSet == 1) {
 		getStringValue(24);
 		if (receivedString[0] != 0) {
-			storage.SSID[0] = 0;
-			strcat(storage.SSID, receivedString);
+			storage.wifiSSID[0] = 0;
+			strcat(storage.wifiSSID, receivedString);
 		}
 	}
 	Serial.println();
@@ -442,7 +477,7 @@ void setSettings(bool doSet) {
 	}
 	Serial.println();
 
-	Serial.print(F("Callsign ("));
+	Serial.print(F("Callsign (+SSID) ("));
 	Serial.print(storage.callSign);
 	Serial.print(F("):"));
 	if (doSet == 1) {
@@ -462,6 +497,19 @@ void setSettings(bool doSet) {
 		if (receivedString[0] != 0) storage.modemChannel = i;
 	}
 	Serial.println();
+
+  Serial.print(F("squelch (0..8 0=open)("));
+  Serial.print(storage.squelch);
+  Serial.print(F("): "));
+  if (doSet == 1) {
+    i = get32NumericValue();
+    if (receivedString[0] != 0) {
+      if ((i >= SQ_MIN) && (i <= SQ_MAX)) {
+        storage.squelch = i;
+      }
+    }
+  }
+  Serial.println();
 
 	Serial.print(F("Oled timeout (seconds)("));
 	Serial.print(storage.oledTimeout);
@@ -493,6 +541,18 @@ void setSettings(bool doSet) {
 	}
 	Serial.println();
 
+  Serial.print(F("Symbol ("));
+  Serial.print(storage.symbol);
+  Serial.print(F("):"));
+  if (doSet == 1) {
+    getStringValue(2);
+    if (receivedString[0] != 0) {
+      storage.symbol[0] = 0;
+      strcat(storage.symbol, receivedString);
+    }
+  }
+  Serial.println();
+
 	Serial.print(F("Latitude ("));
 	Serial.print(storage.latitude);
 	Serial.print(F("):"));
@@ -521,7 +581,7 @@ void setSettings(bool doSet) {
 	Serial.print(storage.PHG);
 	Serial.print(F("):"));
 	if (doSet == 1) {
-		getStringValue(8);
+		getStringValue(7);
 		if (receivedString[0] != 0) {
 			storage.PHG[0] = 0;
 			strcat(storage.PHG, receivedString);
@@ -529,14 +589,26 @@ void setSettings(bool doSet) {
 	}
 	Serial.println();
 
-	Serial.print(F("APRS IP address ("));
-	Serial.print(storage.APRSIP);
+  Serial.print(F("beacon text ("));
+  Serial.print(storage.beaconText);
+  Serial.print(F("):"));
+  if (doSet == 1) {
+    getStringValue(36);
+    if (receivedString[0] != 0) {
+      storage.beaconText[0] = 0;
+      strcat(storage.beaconText, receivedString);
+    }
+  }
+  Serial.println();
+
+	Serial.print(F("APRS-IS address ("));
+	Serial.print(storage.AprsIsAddress);
 	Serial.print(F("):"));
 	if (doSet == 1) {
 		getStringValue(24);
 		if (receivedString[0] != 0) {
-			storage.APRSIP[0] = 0;
-			strcat(storage.APRSIP, receivedString);
+			storage.AprsIsAddress[0] = 0;
+			strcat(storage.AprsIsAddress, receivedString);
 		}
 	}
 	Serial.println();
