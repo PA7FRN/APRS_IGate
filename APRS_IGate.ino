@@ -1,6 +1,7 @@
 #include "EEPROM.h"
 #include <SPI.h>
 #include "WiFi.h"
+#include "ESPAsyncWebServer.h"
 #include "Wire.h"
 #include "SSD1306.h"
 #include "kissHost.hpp"
@@ -20,6 +21,7 @@
 #define hasLCD
 #define SQ_MIN 0
 #define SQ_MAX 8
+#define SETTINGS_COUNT 13
 
 char receivedString[28];
 
@@ -27,6 +29,7 @@ uint32_t oledSleepTime = 0;
 uint32_t txLedDelayTime = 0;
 uint32_t lastClientUpdate = 0;
 
+AsyncWebServer webServer(80);
 WiFiClient client;
 HardwareSerial Modem(1);
 KissHost kissHost(1);
@@ -64,7 +67,7 @@ StoreStruct storage = {
   "WiFiPassword",
   "PI4RAZ-11",
   64, //12.5 KHz steps, 64 = 144.800
-  1,
+  0,
   20,
   600,
   "99999",
@@ -72,14 +75,110 @@ StoreStruct storage = {
   "5204.44N",
   "00430.24E",
   "PHG3210",
-  "Arduino RAZ IGATE /A=000012",
+  "ESP32 RAZ IGATE /A=000012",
   "rotate.aprs.net",
   14580
+};
+
+struct SettingStruct {
+  const char* type;
+  const char* name;
+  const char* text;
+  const char* comment;
+  int min;
+  int max;
+  void* dataPointer;
+};
+
+SettingStruct setting[SETTINGS_COUNT] = {
+  {"text"  , "Callsign"      , "Callsign (+SSID)", ""                            ,   0,     9, &(storage.callSign)      },
+  {"number", "ModemChannel"  , "Modem channel"   , "12.5 KHz steps, 64 = 144.800",   0,   160, &(storage.modemChannel)  },
+  {"number", "squelch"       , "squelch"         , "0 (open) is recommended"     ,   0,     8, &(storage.squelch)       },
+  {"number", "OledTimeout"   , "Oled timeout"    , "seconds"                     ,   1,    60, &(storage.oledTimeout)   },
+  {"number", "UpdateInterval", "Update interval" , "seconds"                     , 300,  7200, &(storage.updateInterval)},
+  {"text"  , "Passcode"      , "Passcode"        , "<a href=https://apps.magicbug.co.uk/passcode/>get passcode</a>", 0, 5, &(storage.passCode)},
+  {"text"  , "Symbol"        , "Symbol"          , "<a href=http://www.aprs.org/symbols.html>info</a>"             , 0, 2, &(storage.symbol)  },
+  {"text"  , "Latitude"      , "Latitude"        , ""                            ,   0,     8, &(storage.latitude)      },
+  {"text"  , "Longitude"     , "Longitude"       , ""                            ,   0,     9, &(storage.longitude)     },
+  {"text"  , "PHG"           , "PHG"             , ""                            ,   0,     7, &(storage.PHG)           },
+  {"text"  , "beaconText"    , "beacon text"     , ""                            ,   0,    36, &(storage.beaconText)    },
+  {"text"  , "APRSISaddress" , "APRS-IS address" , ""                            ,   0,    24, &(storage.AprsIsAddress) },
+  {"number", "APRSport"      , "APRS port"       , ""                            ,   0, 99999, &(storage.APRSPort)      }
 };
 
 #ifdef hasLCD
 SSD1306  lcd(OLED_ADR, OLED_SDA, OLED_SCL);// i2c ADDR & SDA, SCL on wemos
 #endif
+
+//const char *ap_ssid = "RazIGate";
+//const char *ap_password = "aprsigate";
+
+const char index_html[] PROGMEM = R"rawliteral(
+<!DOCTYPE HTML><html>
+<head>
+  <title>ESP Web Server</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <style>
+    html {font-family: Arial; display: inline-block; text-align: left;}
+    h2 {font-size: 3.0rem;}
+    p {font-size: 3.0rem;}
+    body {max-width: 600px; margin:0px auto; padding-bottom: 25px;}
+  </style>
+</head>
+<body>
+  <h2>ESP32 RAZ IGATE</h2>
+  %SETTINGPLACEHOLDER%
+</body>
+</html>
+)rawliteral";
+
+String processor(const String& var){
+  if (var == "SETTINGPLACEHOLDER") {
+    String settings = "";
+    settings += "<form action=\"/update\"><table>";
+    for (int i=0; i<SETTINGS_COUNT; i++) {
+      settings += "<tr><td style=\"text-align:right\">";
+      settings.concat(setting[i].text);
+      settings += "</td><td><input type=\"";
+      settings.concat(setting[i].type);
+      settings += "\" name=\"";
+      settings.concat(setting[i].name);
+      if (setting[i].type == "number") {
+        settings += "\" min=\"";
+        settings.concat(setting[i].min);
+        settings += "\" max=\"";
+        settings.concat(setting[i].max);
+        settings += "\" value=\"";
+        int* intPointer = (int *)(setting[i].dataPointer);
+        settings += String(*intPointer);
+      }
+      else {
+        settings += "\"  maxlength=\"";
+        settings.concat(setting[i].max);
+        settings += "\" value=\"";
+        settings.concat((char *)(setting[i].dataPointer));
+      }
+      settings += "\"></td><td>";
+      settings.concat(setting[i].comment);
+      settings += "</td></tr>";
+    }
+    settings += "</table><input type=\"submit\" value=\"Set\"></form>";
+    return settings;
+  }
+  return String();
+}
+
+void setSettingVal(int i, String strSetting) {
+  if (setting[i].type == "number") {
+    int* intPointer = (int *)(setting[i].dataPointer);
+    *intPointer = strSetting.toInt();
+  }
+  else {
+    char* chrPointer = (char *)(setting[i].dataPointer);
+    strSetting.toCharArray(chrPointer, setting[i].max+1);
+  }
+}
 
 void setup() {
 	pinMode(OLED_RST,OUTPUT);
@@ -124,7 +223,7 @@ void setup() {
 	lcd.display();
 	#endif
 
-	Serial.println(F("Type GS to enter setup:"));
+	Serial.println(F("Type GS to enter Wifi setup:"));
   uint32_t setupWaitTime=millis();
   char gs1, gs2;
   while (millis()-setupWaitTime < 10000) {
@@ -139,11 +238,35 @@ void setup() {
         lcd.drawString(0, 0,"Setup entered");
         lcd.display();
         #endif
-        setSettings(true);
+        setWifiSettings();
         delay(2000);
       }
     }
   }
+
+/*WiFi.softAP(ap_ssid, ap_password);
+  Serial.print("IP address: ");
+  Serial.println(WiFi.softAPIP()); */
+  webServer.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send_P(200, "text/html", index_html, processor);
+  });
+
+  webServer.on("/update", HTTP_GET, [] (AsyncWebServerRequest *request) {
+    bool doSave = false;
+    for (int i=0; i<SETTINGS_COUNT; i++) {
+      if (request->hasParam(setting[i].name)) {
+        doSave = true;
+        setSettingVal(i, request->getParam(setting[i].name)->value());
+      }
+    }
+    if (doSave) {
+      saveConfig();
+      showSettings();
+    }
+    request->send_P(200, "text/html", index_html, processor);
+  });
+  InitConnection();
+  webServer.begin();
 
 	delay(1000);
 	setDra(storage.modemChannel, storage.squelch);
@@ -186,7 +309,7 @@ void loop() {
   if (Modem.available() > 0) {
     buflen = kissHost.processKissInByte(Modem.read());
   }
-  
+
   if (check_connection()){
     if (buflen>0) {
       bool drop;
@@ -298,7 +421,8 @@ void InitConnection() {
     #endif
     Serial.println("++++++++++++++");
     Serial.println("WiFi connected");
-    Serial.println("IP address: ");
+    Serial.print("IP address: ");
+    Serial.println(WiFi.localIP());
 
 		if (!client.connected()) {
 			Serial.println("Connecting...");
@@ -449,183 +573,51 @@ void setDra(byte freq, byte squelch) {
   Modem.println(buff);
 }
 
-void setSettings(bool doSet) {
-	int i = 0;
-	receivedString[0] = 'X';
+void showSettings() {
+	Serial.print(F("Wifi SSID : "));
+	Serial.println(storage.wifiSSID);
 
-	Serial.print(F("Wifi SSID ("));
-	Serial.print(storage.wifiSSID);
-	Serial.print(F("):"));
-	if (doSet == 1) {
-		getStringValue(24);
-		if (receivedString[0] != 0) {
-			storage.wifiSSID[0] = 0;
-			strcat(storage.wifiSSID, receivedString);
-		}
-	}
-	Serial.println();
+	Serial.print(F("WiFi password : "));
+	Serial.println(storage.pass);
 
-	Serial.print(F("WiFi password ("));
-	Serial.print(storage.pass);
-	Serial.print(F("):"));
-	if (doSet == 1) {
-		getStringValue(63);
-		if (receivedString[0] != 0) {
-			storage.pass[0] = 0;
-			strcat(storage.pass, receivedString);
-		}
-	}
-	Serial.println();
-
-	Serial.print(F("Callsign (+SSID) ("));
-	Serial.print(storage.callSign);
-	Serial.print(F("):"));
-	if (doSet == 1) {
-		getStringValue(9);
-		if (receivedString[0] != 0) {
-			storage.callSign[0] = 0;
-			strcat(storage.callSign, receivedString);
-		}
-	}
-	Serial.println();
-
-	Serial.print(F("Modem channel (12.5 KHz steps, 64 = 144.800)("));
-	Serial.print(storage.modemChannel);
-	Serial.print(F("): "));
-	if (doSet == 1) {
-		i = get32NumericValue();
-		if (receivedString[0] != 0) storage.modemChannel = i;
-	}
-	Serial.println();
-
-  Serial.print(F("squelch (0..8 0=open)("));
-  Serial.print(storage.squelch);
-  Serial.print(F("): "));
-  if (doSet == 1) {
-    i = get32NumericValue();
-    if (receivedString[0] != 0) {
-      if ((i >= SQ_MIN) && (i <= SQ_MAX)) {
-        storage.squelch = i;
-      }
+  for (int i=0; i<SETTINGS_COUNT; i++) {
+    Serial.print(setting[i].text);
+    Serial.print(" : ");
+    if (setting[i].type == "number") {
+      int* intPointer = (int *)(setting[i].dataPointer);
+      Serial.println(String(*intPointer));
+    }
+    else {
+      Serial.println((char *)(setting[i].dataPointer));
     }
   }
-  Serial.println();
+}
 
-	Serial.print(F("Oled timeout (seconds)("));
-	Serial.print(storage.oledTimeout);
-	Serial.print(F("): "));
-	if (doSet == 1) {
-		i = get32NumericValue();
-		if (receivedString[0] != 0) storage.oledTimeout = i;
-	}
-	Serial.println();
+void setWifiSettings() {
+  receivedString[0] = 'X';
 
-	Serial.print(F("Update interval (minutes)("));
-	Serial.print(storage.updateInterval);
-	Serial.print(F("): "));
-	if (doSet == 1) {
-		i = get32NumericValue();
-		if (receivedString[0] != 0) storage.updateInterval = i;
-	}
-	Serial.println();
-
-	Serial.print(F("Passcode ("));
-	Serial.print(storage.passCode);
-	Serial.print(F("):"));
-	if (doSet == 1) {
-		getStringValue(5);
-		if (receivedString[0] != 0) {
-			storage.passCode[0] = 0;
-			strcat(storage.passCode, receivedString);
-		}
-	}
-	Serial.println();
-
-  Serial.print(F("Symbol ("));
-  Serial.print(storage.symbol);
+  Serial.print(F("Wifi SSID ("));
+  Serial.print(storage.wifiSSID);
   Serial.print(F("):"));
-  if (doSet == 1) {
-    getStringValue(2);
-    if (receivedString[0] != 0) {
-      storage.symbol[0] = 0;
-      strcat(storage.symbol, receivedString);
-    }
+  getStringValue(24);
+  if (receivedString[0] != 0) {
+    storage.wifiSSID[0] = 0;
+    strcat(storage.wifiSSID, receivedString);
   }
   Serial.println();
 
-	Serial.print(F("Latitude ("));
-	Serial.print(storage.latitude);
-	Serial.print(F("):"));
-	if (doSet == 1) {
-		getStringValue(8);
-		if (receivedString[0] != 0) {
-			storage.latitude[0] = 0;
-			strcat(storage.latitude, receivedString);
-		}
-	}
-	Serial.println();
-
-	Serial.print(F("Longitude ("));
-	Serial.print(storage.longitude);
-	Serial.print(F("):"));
-	if (doSet == 1) {
-		getStringValue(9);
-		if (receivedString[0] != 0) {
-			storage.longitude[0] = 0;
-			strcat(storage.longitude, receivedString);
-		}
-	}
-	Serial.println();
-
-	Serial.print(F("PHG ("));
-	Serial.print(storage.PHG);
-	Serial.print(F("):"));
-	if (doSet == 1) {
-		getStringValue(7);
-		if (receivedString[0] != 0) {
-			storage.PHG[0] = 0;
-			strcat(storage.PHG, receivedString);
-		}
-	}
-	Serial.println();
-
-  Serial.print(F("beacon text ("));
-  Serial.print(storage.beaconText);
+  Serial.print(F("WiFi password ("));
+  Serial.print(storage.pass);
   Serial.print(F("):"));
-  if (doSet == 1) {
-    getStringValue(36);
-    if (receivedString[0] != 0) {
-      storage.beaconText[0] = 0;
-      strcat(storage.beaconText, receivedString);
-    }
+  getStringValue(63);
+  if (receivedString[0] != 0) {
+    storage.pass[0] = 0;
+    strcat(storage.pass, receivedString);
   }
   Serial.println();
 
-	Serial.print(F("APRS-IS address ("));
-	Serial.print(storage.AprsIsAddress);
-	Serial.print(F("):"));
-	if (doSet == 1) {
-		getStringValue(24);
-		if (receivedString[0] != 0) {
-			storage.AprsIsAddress[0] = 0;
-			strcat(storage.AprsIsAddress, receivedString);
-		}
-	}
-	Serial.println();
-
-	Serial.print(F("APRS port("));
-	Serial.print(storage.APRSPort);
-	Serial.print(F("): "));
-	if (doSet == 1) {
-		i = get32NumericValue();
-		if (receivedString[0] != 0) storage.APRSPort = i;
-	}
-	Serial.println();
-
-	if (doSet == 1) {
-		saveConfig();
-		loadConfig();
-	}
+  saveConfig();
+//  loadConfig();
 }
 
 void getStringValue(int length) {
@@ -648,114 +640,6 @@ void getStringValue(int length) {
 	SerialFlush();
 }
 
-byte getCharValue() {
-	SerialFlush();
-	receivedString[0] = 0;
-	int i = 0;
-	while (receivedString[i] != 13 && i < 2) {
-		if (Serial.available() > 0) {
-			receivedString[i] = Serial.read();
-			if (receivedString[i] == 13 || receivedString[i] == 10) {
-				i--;
-			}
-			else {
-				Serial.write(receivedString[i]);
-			}
-			i++;
-		}
-	}
-	receivedString[i] = 0;
-	SerialFlush();
-	return receivedString[i - 1];
-}
-
-uint32_t get32NumericValue() {
-	SerialFlush();
-	uint32_t myByte = 0;
-	byte inChar = 0;
-	bool isNegative = false;
-	receivedString[0] = 0;
-
-	int i = 0;
-	while (inChar != 13) {
-		if (Serial.available() > 0) {
-			inChar = Serial.read();
-			if (inChar > 47 && inChar < 58) {
-				receivedString[i] = inChar;
-				i++;
-				Serial.write(inChar);
-				myByte = (myByte * 10) + (inChar - 48);
-			}
-			if (inChar == 45) {
-				Serial.write(inChar);
-				isNegative = true;
-			}
-		}
-	}
-	receivedString[i] = 0;
-	if (isNegative == true) myByte = myByte * -1;
-	SerialFlush();
-	return myByte;
-}
-
-uint16_t get16NumericValue() {
-	SerialFlush();
-	uint16_t myByte = 0;
-	byte inChar = 0;
-	bool isNegative = false;
-	receivedString[0] = 0;
-
-	int i = 0;
-	while (inChar != 13) {
-		if (Serial.available() > 0) {
-			inChar = Serial.read();
-			if (inChar > 47 && inChar < 58) {
-				receivedString[i] = inChar;
-				i++;
-				Serial.write(inChar);
-				myByte = (myByte * 10) + (inChar - 48);
-			}
-			if (inChar == 45) {
-				Serial.write(inChar);
-				isNegative = true;
-			}
-		}
-	}
-	receivedString[i] = 0;
-	if (isNegative == true) myByte = myByte * -1;
-	SerialFlush();
-	return myByte;
-}
-
-byte getNumericValue() {
-	SerialFlush();
-	byte myByte = 0;
-	byte inChar = 0;
-	bool isNegative = false;
-	receivedString[0] = 0;
-
-	int i = 0;
-	while (inChar != 13) {
-		if (Serial.available() > 0) {
-			inChar = Serial.read();
-			if (inChar > 47 && inChar < 58) {
-				receivedString[i] = inChar;
-				i++;
-				Serial.write(inChar);
-				myByte = (myByte * 10) + (inChar - 48);
-			}
-			if (inChar == 45) {
-				Serial.write(inChar);
-				isNegative = true;
-			}
-		}
-	}
-	receivedString[i] = 0;
-	if (isNegative == true) myByte = myByte * -1;
-	SerialFlush();
-	return myByte;
-}
-
 void saveConfig() {
   for (unsigned int t = 0; t < sizeof(storage); t++)
     EEPROM.write(offsetEEPROM + t, *((char*)&storage + t));
@@ -774,7 +658,7 @@ void printConfig() {
       Serial.write(EEPROM.read(offsetEEPROM + t));
 
   Serial.println();
-  setSettings(0);
+  showSettings();
 }
 
 void SerialFlush() {
